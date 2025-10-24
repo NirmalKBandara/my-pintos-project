@@ -1,0 +1,8 @@
+#ifndef DEVICES_VGA_H
+#define DEVICES_VGA_H
+
+void vga_putc (int);
+//static void cls (void);
+
+
+#endif /* devices/vga.h */

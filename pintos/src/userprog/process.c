@@ -25,44 +25,194 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
+/* Structure to pass information to the child process. */
+struct startup_args
+{
+  const char *command_str;      /* Command line to execute. */
+  struct semaphore startup_sync;/* Semaphore for load synchronization. */
+  bool startup_success;         /* Did the load succeed? */
+  struct thread *parent_thread; /* Parent thread. */
+};
+
 tid_t
 process_execute (const char *file_name) 
 {
-  char *fn_copy;
-  tid_t tid;
+  char *cmd_copy;
+  char *token_ptr;
+  tid_t child_tid;
+  struct startup_args *args;
+
+  /* Allocate startup args structure. */
+  args = palloc_get_page (0);
+  if (args == NULL)
+    return TID_ERROR;
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
-  fn_copy = palloc_get_page (0);
-  if (fn_copy == NULL)
-    return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  cmd_copy = palloc_get_page (0);
+  if (cmd_copy == NULL)
+    {
+      palloc_free_page (args);
+      return TID_ERROR;
+    }
+  strlcpy (cmd_copy, file_name, PGSIZE);
+
+  /* Initialize startup args. */
+  args->command_str = cmd_copy;
+  sema_init (&args->startup_sync, 0);
+  args->startup_success = false;
+  args->parent_thread = thread_current ();
+
+  /* Extract program name for thread creation. */
+  char *program_name = palloc_get_page (0);
+  if (program_name == NULL) 
+    {
+      palloc_free_page (cmd_copy);
+      palloc_free_page (args);
+      return TID_ERROR;
+    }
+  strlcpy (program_name, file_name, PGSIZE);
+  program_name = strtok_r (program_name, " ", &token_ptr);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
-  return tid;
+  child_tid = thread_create (program_name, PRI_DEFAULT, start_process, args);
+  palloc_free_page (program_name);
+  
+  if (child_tid == TID_ERROR)
+    {
+      palloc_free_page (cmd_copy);
+      palloc_free_page (args);
+      return child_tid;
+    }
+
+  /* Wait for child to load. */
+  sema_down (&args->startup_sync);
+  bool success = args->startup_success;
+  palloc_free_page (args);
+  
+  if (!success)
+    return TID_ERROR;
+  
+  return child_tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *args_)
 {
-  char *file_name = file_name_;
+  struct startup_args *args = args_;
+  char *cmd_line = (char *) args->command_str;
+  char *parse_copy;
   struct intr_frame if_;
   bool success;
+  struct thread *current = thread_current ();
+
+  /* Create and initialize child status. */
+  struct process_info *pinfo = malloc (sizeof (struct process_info));
+  if (pinfo == NULL)
+    {
+      args->startup_success = false;
+      sema_up (&args->startup_sync);
+      palloc_free_page ((void *) cmd_line);
+      thread_exit ();
+    }
+  
+  pinfo->process_id = current->tid;
+  pinfo->status_code = -1;
+  pinfo->wait_called = false;
+  pinfo->is_terminated = false;
+  sema_init (&pinfo->wait_sync, 0);
+  current->proc_info = pinfo;
+  
+  /* Add to parent's children list. */
+  if (args->parent_thread != NULL)
+    list_push_back (&args->parent_thread->child_list, &pinfo->list_node);
+
+  /* Make another copy for tokenization. */
+  parse_copy = palloc_get_page (0);
+  if (parse_copy == NULL)
+    {
+      args->startup_success = false;
+      sema_up (&args->startup_sync);
+      palloc_free_page ((void *) cmd_line);
+      thread_exit ();
+    }
+  strlcpy (parse_copy, cmd_line, PGSIZE);
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (file_name, &if_.eip, &if_.esp);
+  success = load (cmd_line, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
-  palloc_free_page (file_name);
+  /* If load successful, setup arguments on stack. */
+  if (success)
+    {
+      /* Parse arguments and push onto stack. */
+      char *arg_token, *token_state;
+      char *arg_vector[128];
+      int arg_count = 0;
+      
+      for (arg_token = strtok_r (parse_copy, " ", &token_state); arg_token != NULL;
+           arg_token = strtok_r (NULL, " ", &token_state))
+        {
+          if (arg_count < 128)
+            arg_vector[arg_count++] = arg_token;
+        }
+      
+      /* Push arguments onto stack. */
+      int idx;
+      uintptr_t *arg_addresses[128];
+      
+      /* Push argument strings from right to left. */
+      for (idx = arg_count - 1; idx >= 0; idx--)
+        {
+          int str_len = strlen (arg_vector[idx]) + 1;
+          if_.esp -= str_len;
+          memcpy (if_.esp, arg_vector[idx], str_len);
+          arg_addresses[idx] = (uintptr_t *) if_.esp;
+        }
+      
+      /* Word-align the stack pointer. */
+      while ((uintptr_t) if_.esp % 4 != 0)
+        {
+          if_.esp--;
+          *(uint8_t *) if_.esp = 0;
+        }
+      
+      /* Push null pointer sentinel. */
+      if_.esp -= 4;
+      *(uint32_t *) if_.esp = 0;
+      
+      /* Push pointers to argument strings from right to left. */
+      for (idx = arg_count - 1; idx >= 0; idx--)
+        {
+          if_.esp -= 4;
+          *(uintptr_t **) if_.esp = arg_addresses[idx];
+        }
+      
+      /* Push argv (pointer to argv[0]). */
+      uintptr_t arg_ptr = (uintptr_t) if_.esp;
+      if_.esp -= 4;
+      *(uintptr_t *) if_.esp = arg_ptr;
+      
+      /* Push argc. */
+      if_.esp -= 4;
+      *(int *) if_.esp = arg_count;
+      
+      /* Push fake return address. */
+      if_.esp -= 4;
+      *(uint32_t *) if_.esp = 0;
+    }
+
+  /* Notify parent and cleanup. */
+  args->startup_success = success;
+  sema_up (&args->startup_sync);
+  palloc_free_page ((void *) cmd_line);
+  palloc_free_page (parse_copy);
+  
   if (!success) 
     thread_exit ();
 
@@ -81,36 +231,99 @@ start_process (void *file_name_)
    exception), returns -1.  If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+   immediately, without waiting. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  struct thread *current = thread_current ();
+  struct process_info *pinfo = NULL;
+  struct list_elem *iter;
+  
+  /* Find the child with the given tid. */
+  for (iter = list_begin (&current->child_list); iter != list_end (&current->child_list); iter = list_next (iter))
+    {
+      struct process_info *proc = list_entry (iter, struct process_info, list_node);
+      if (proc->process_id == child_tid)
+        {
+          pinfo = proc;
+          break;
+        }
+    }
+  
+  /* Return -1 if not a child or already waited. */
+  if (pinfo == NULL || pinfo->wait_called)
+    return -1;
+  
+  /* Mark as waited. */
+  pinfo->wait_called = true;
+  
+  /* Wait for child to exit. */
+  if (!pinfo->is_terminated)
+    sema_down (&pinfo->wait_sync);
+  
+  /* Get exit status and cleanup. */
+  int ret_status = pinfo->status_code;
+  list_remove (&pinfo->list_node);
+  free (pinfo);
+  
+  return ret_status;
 }
 
 /* Free the current process's resources. */
 void
 process_exit (void)
 {
-  struct thread *cur = thread_current ();
+  struct thread *current = thread_current ();
   uint32_t *pd;
+
+  /* Close all open files. */
+  int fd_idx;
+  for (fd_idx = 2; fd_idx < 128; fd_idx++)
+    {
+      if (current->file_desc_table[fd_idx] != NULL)
+        {
+          file_close (current->file_desc_table[fd_idx]);
+          current->file_desc_table[fd_idx] = NULL;
+        }
+    }
+  
+  /* Close executable and allow writes. */
+  if (current->exec_file != NULL)
+    {
+      file_allow_write (current->exec_file);
+      file_close (current->exec_file);
+      current->exec_file = NULL;
+    }
+  
+  /* Update child status and signal parent. */
+  if (current->proc_info != NULL)
+    {
+      current->proc_info->status_code = current->status_code;
+      current->proc_info->is_terminated = true;
+      sema_up (&current->proc_info->wait_sync);
+    }
+  
+  /* Free child status structures for all children. */
+  while (!list_empty (&current->child_list))
+    {
+      struct list_elem *node = list_pop_front (&current->child_list);
+      struct process_info *pinfo = list_entry (node, struct process_info, list_node);
+      free (pinfo);
+    }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
-  pd = cur->pagedir;
+  pd = current->pagedir;
   if (pd != NULL) 
     {
       /* Correct ordering here is crucial.  We must set
-         cur->pagedir to NULL before switching page directories,
+         current->pagedir to NULL before switching page directories,
          so that a timer interrupt can't switch back to the
          process page directory.  We must activate the base page
          directory before destroying the process's page
          directory, or our active page directory will be one
          that's been freed (and cleared). */
-      cur->pagedir = NULL;
+      current->pagedir = NULL;
       pagedir_activate (NULL);
       pagedir_destroy (pd);
     }
@@ -208,29 +421,42 @@ static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
 bool
 load (const char *file_name, void (**eip) (void), void **esp) 
 {
-  struct thread *t = thread_current ();
+  struct thread *current = thread_current ();
   struct Elf32_Ehdr ehdr;
-  struct file *file = NULL;
-  off_t file_ofs;
+  struct file *exec_file = NULL;
+  off_t file_offset;
   bool success = false;
-  int i;
+  int idx;
+  char *program_name, *token_state;
 
   /* Allocate and activate page directory. */
-  t->pagedir = pagedir_create ();
-  if (t->pagedir == NULL) 
+  current->pagedir = pagedir_create ();
+  if (current->pagedir == NULL) 
     goto done;
   process_activate ();
 
+  /* Extract program name (first token before space). */
+  program_name = palloc_get_page (0);
+  if (program_name == NULL)
+    goto done;
+  strlcpy (program_name, file_name, PGSIZE);
+  program_name = strtok_r (program_name, " ", &token_state);
+
   /* Open executable file. */
-  file = filesys_open (file_name);
-  if (file == NULL) 
+  exec_file = filesys_open (program_name);
+  palloc_free_page (program_name);
+  if (exec_file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
 
+  /* Deny writes to executable. */
+  current->exec_file = exec_file;
+  file_deny_write (exec_file);
+
   /* Read and verify executable header. */
-  if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
+  if (file_read (exec_file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
       || ehdr.e_type != 2
       || ehdr.e_machine != 3
@@ -243,18 +469,18 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Read program headers. */
-  file_ofs = ehdr.e_phoff;
-  for (i = 0; i < ehdr.e_phnum; i++) 
+  file_offset = ehdr.e_phoff;
+  for (idx = 0; idx < ehdr.e_phnum; idx++) 
     {
       struct Elf32_Phdr phdr;
 
-      if (file_ofs < 0 || file_ofs > file_length (file))
+      if (file_offset < 0 || file_offset > file_length (exec_file))
         goto done;
-      file_seek (file, file_ofs);
+      file_seek (exec_file, file_offset);
 
-      if (file_read (file, &phdr, sizeof phdr) != sizeof phdr)
+      if (file_read (exec_file, &phdr, sizeof phdr) != sizeof phdr)
         goto done;
-      file_ofs += sizeof phdr;
+      file_offset += sizeof phdr;
       switch (phdr.p_type) 
         {
         case PT_NULL:
@@ -269,7 +495,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
         case PT_SHLIB:
           goto done;
         case PT_LOAD:
-          if (validate_segment (&phdr, file)) 
+          if (validate_segment (&phdr, exec_file)) 
             {
               bool writable = (phdr.p_flags & PF_W) != 0;
               uint32_t file_page = phdr.p_offset & ~PGMASK;
@@ -291,7 +517,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
-              if (!load_segment (file, file_page, (void *) mem_page,
+              if (!load_segment (exec_file, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable))
                 goto done;
             }
@@ -312,7 +538,12 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  /* Don't close file on success - it will be closed in process_exit. */
+  if (!success && exec_file != NULL)
+    {
+      file_close (exec_file);
+      current->exec_file = NULL;
+    }
   return success;
 }
 

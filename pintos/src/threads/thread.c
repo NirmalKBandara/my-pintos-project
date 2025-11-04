@@ -464,6 +464,17 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
 
+#ifdef USERPROG
+  t->status_code = -1;
+  list_init (&t->child_list);
+  t->proc_info = NULL;
+  t->exec_file = NULL;
+  t->next_file_desc = 2;  /* 0 and 1 are reserved for stdin/stdout */
+  int i;
+  for (i = 0; i < 128; i++)
+    t->file_desc_table[i] = NULL;
+#endif
+
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
   intr_set_level (old_level);

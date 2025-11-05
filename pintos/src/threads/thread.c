@@ -469,7 +469,7 @@ init_thread (struct thread *t, const char *name, int priority)
   list_init (&t->child_list);
   t->proc_info = NULL;
   t->exec_file = NULL;
-  t->next_file_desc = 2;  /* 0 and 1 are reserved for stdin/stdout */
+  t->next_file_desc = 2;
   int i;
   for (i = 0; i < 128; i++)
     t->file_desc_table[i] = NULL;

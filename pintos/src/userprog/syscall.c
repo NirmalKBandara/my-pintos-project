@@ -17,14 +17,12 @@
 static void syscall_handler (struct intr_frame *);
 static struct lock file_system_lock;
 
-/* Helper functions. */
 static void check_user_ptr (const void *ptr);
 static void check_user_buffer (const void *buffer, unsigned size);
 static void check_user_string (const char *str);
 static int get_user (const uint8_t *uaddr);
 static void terminate_process (int status);
 
-/* System call implementations. */
 static void halt_system (void);
 static tid_t execute_program (const char *cmd_line);
 static int wait_for_process (tid_t pid);
@@ -137,7 +135,6 @@ syscall_handler (struct intr_frame *f)
     }
 }
 
-/* Validates that PTR is a valid user pointer. */
 static void
 check_user_ptr (const void *ptr)
 {
@@ -146,7 +143,6 @@ check_user_ptr (const void *ptr)
     terminate_process (-1);
 }
 
-/* Validates that a buffer is entirely in valid user memory. */
 static void
 check_user_buffer (const void *buffer, unsigned size)
 {
@@ -156,7 +152,6 @@ check_user_buffer (const void *buffer, unsigned size)
     check_user_ptr (buf + i);
 }
 
-/* Validates that a string is entirely in valid user memory. */
 static void
 check_user_string (const char *str)
 {
@@ -168,14 +163,12 @@ check_user_string (const char *str)
     }
 }
 
-/* Terminates Pintos. */
 static void
 halt_system (void)
 {
   shutdown_power_off ();
 }
 
-/* Terminates the current user program, returning STATUS to the kernel. */
 static void
 terminate_process (int status)
 {
@@ -185,21 +178,18 @@ terminate_process (int status)
   thread_exit ();
 }
 
-/* Runs the executable whose name is given in CMD_LINE. */
 static tid_t
 execute_program (const char *cmd_line)
 {
   return process_execute (cmd_line);
 }
 
-/* Waits for a child process PID and returns its exit status. */
 static int
 wait_for_process (tid_t pid)
 {
   return process_wait (pid);
 }
 
-/* Creates a new file called FILE with the given INITIAL_SIZE. */
 static bool
 create_file (const char *file, unsigned initial_size)
 {
@@ -212,7 +202,6 @@ create_file (const char *file, unsigned initial_size)
   return success;
 }
 
-/* Deletes the file called FILE. */
 static bool
 delete_file (const char *file)
 {
@@ -225,7 +214,6 @@ delete_file (const char *file)
   return success;
 }
 
-/* Opens the file called FILE. */
 static int
 open_file (const char *file)
 {
@@ -253,7 +241,6 @@ open_file (const char *file)
   return fd;
 }
 
-/* Returns the size of the file open as FD. */
 static int
 get_file_size (int fd)
 {
@@ -272,14 +259,13 @@ get_file_size (int fd)
   return size;
 }
 
-/* Reads SIZE bytes from the file open as FD into BUFFER. */
 static int
 read_from_file (int fd, void *buffer, unsigned size)
 {
-  if (fd == 1)  /* Cannot read from stdout. */
+  if (fd == 1)
     return -1;
     
-  if (fd == 0)  /* Read from stdin. */
+  if (fd == 0)
     {
       unsigned i;
       uint8_t *buf = (uint8_t *) buffer;
@@ -303,14 +289,13 @@ read_from_file (int fd, void *buffer, unsigned size)
   return bytes_read;
 }
 
-/* Writes SIZE bytes from BUFFER to the file open as FD. */
 static int
 write_to_file (int fd, const void *buffer, unsigned size)
 {
-  if (fd == 0)  /* Cannot write to stdin. */
+  if (fd == 0)
     return -1;
     
-  if (fd == 1)  /* Write to stdout. */
+  if (fd == 1)
     {
       putbuf (buffer, size);
       return size;
@@ -331,7 +316,6 @@ write_to_file (int fd, const void *buffer, unsigned size)
   return bytes_written;
 }
 
-/* Changes the next byte to be read or written in FD to POSITION. */
 static void
 set_file_position (int fd, unsigned position)
 {
@@ -349,7 +333,6 @@ set_file_position (int fd, unsigned position)
   lock_release (&file_system_lock);
 }
 
-/* Returns the position of the next byte to be read or written in FD. */
 static unsigned
 get_file_position (int fd)
 {
@@ -368,7 +351,6 @@ get_file_position (int fd)
   return position;
 }
 
-/* Closes file descriptor FD. */
 static void
 close_file (int fd)
 {

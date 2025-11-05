@@ -97,16 +97,16 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
-    struct file *exec_file;             /* Executable file. */
+    struct file *exec_file;
     
-    /* Process management fields. */
-    int status_code;                    /* Exit status of this process. */
-    struct list child_list;             /* List of child status structures. */
-    struct process_info *proc_info;     /* Pointer to this process's child status. */
     
-    /* File descriptor table. */
-    struct file *file_desc_table[128];  /* File descriptor table. */
-    int next_file_desc;                 /* Next file descriptor to allocate. */
+    int status_code;
+    struct list child_list;
+    struct process_info *proc_info;
+    
+    
+    struct file *file_desc_table[128];  
+    int next_file_desc;
 #endif
 
     /* Owned by thread.c. */

@@ -25,13 +25,12 @@ static bool load (const char *cmdline, void (**eip) (void), void **esp);
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
-/* Structure to pass information to the child process. */
 struct startup_args
 {
-  const char *command_str;      /* Command line to execute. */
-  struct semaphore startup_sync;/* Semaphore for load synchronization. */
-  bool startup_success;         /* Did the load succeed? */
-  struct thread *parent_thread; /* Parent thread. */
+  const char *command_str;
+  struct semaphore startup_sync;
+  bool startup_success;
+  struct thread *parent_thread;
 };
 
 tid_t
@@ -42,7 +41,6 @@ process_execute (const char *file_name)
   tid_t child_tid;
   struct startup_args *args;
 
-  /* Allocate startup args structure. */
   args = palloc_get_page (0);
   if (args == NULL)
     return TID_ERROR;
@@ -57,13 +55,11 @@ process_execute (const char *file_name)
     }
   strlcpy (cmd_copy, file_name, PGSIZE);
 
-  /* Initialize startup args. */
   args->command_str = cmd_copy;
   sema_init (&args->startup_sync, 0);
   args->startup_success = false;
   args->parent_thread = thread_current ();
 
-  /* Extract program name for thread creation. */
   char *program_name = palloc_get_page (0);
   if (program_name == NULL) 
     {
@@ -74,7 +70,6 @@ process_execute (const char *file_name)
   strlcpy (program_name, file_name, PGSIZE);
   program_name = strtok_r (program_name, " ", &token_ptr);
 
-  /* Create a new thread to execute FILE_NAME. */
   child_tid = thread_create (program_name, PRI_DEFAULT, start_process, args);
   palloc_free_page (program_name);
   
@@ -85,7 +80,6 @@ process_execute (const char *file_name)
       return child_tid;
     }
 
-  /* Wait for child to load. */
   sema_down (&args->startup_sync);
   bool success = args->startup_success;
   palloc_free_page (args);
@@ -108,7 +102,6 @@ start_process (void *args_)
   bool success;
   struct thread *current = thread_current ();
 
-  /* Create and initialize child status. */
   struct process_info *pinfo = malloc (sizeof (struct process_info));
   if (pinfo == NULL)
     {
@@ -125,11 +118,9 @@ start_process (void *args_)
   sema_init (&pinfo->wait_sync, 0);
   current->proc_info = pinfo;
   
-  /* Add to parent's children list. */
   if (args->parent_thread != NULL)
     list_push_back (&args->parent_thread->child_list, &pinfo->list_node);
 
-  /* Make another copy for tokenization. */
   parse_copy = palloc_get_page (0);
   if (parse_copy == NULL)
     {
@@ -140,17 +131,14 @@ start_process (void *args_)
     }
   strlcpy (parse_copy, cmd_line, PGSIZE);
 
-  /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (cmd_line, &if_.eip, &if_.esp);
 
-  /* If load successful, setup arguments on stack. */
   if (success)
     {
-      /* Parse arguments and push onto stack. */
       char *arg_token, *token_state;
       char *arg_vector[128];
       int arg_count = 0;
@@ -162,11 +150,9 @@ start_process (void *args_)
             arg_vector[arg_count++] = arg_token;
         }
       
-      /* Push arguments onto stack. */
       int idx;
       uintptr_t *arg_addresses[128];
       
-      /* Push argument strings from right to left. */
       for (idx = arg_count - 1; idx >= 0; idx--)
         {
           int str_len = strlen (arg_vector[idx]) + 1;
@@ -175,39 +161,32 @@ start_process (void *args_)
           arg_addresses[idx] = (uintptr_t *) if_.esp;
         }
       
-      /* Word-align the stack pointer. */
       while ((uintptr_t) if_.esp % 4 != 0)
         {
           if_.esp--;
           *(uint8_t *) if_.esp = 0;
         }
       
-      /* Push null pointer sentinel. */
       if_.esp -= 4;
       *(uint32_t *) if_.esp = 0;
       
-      /* Push pointers to argument strings from right to left. */
       for (idx = arg_count - 1; idx >= 0; idx--)
         {
           if_.esp -= 4;
           *(uintptr_t **) if_.esp = arg_addresses[idx];
         }
       
-      /* Push argv (pointer to argv[0]). */
       uintptr_t arg_ptr = (uintptr_t) if_.esp;
       if_.esp -= 4;
       *(uintptr_t *) if_.esp = arg_ptr;
       
-      /* Push argc. */
       if_.esp -= 4;
       *(int *) if_.esp = arg_count;
       
-      /* Push fake return address. */
       if_.esp -= 4;
       *(uint32_t *) if_.esp = 0;
     }
 
-  /* Notify parent and cleanup. */
   args->startup_success = success;
   sema_up (&args->startup_sync);
   palloc_free_page ((void *) cmd_line);
@@ -239,7 +218,6 @@ process_wait (tid_t child_tid)
   struct process_info *pinfo = NULL;
   struct list_elem *iter;
   
-  /* Find the child with the given tid. */
   for (iter = list_begin (&current->child_list); iter != list_end (&current->child_list); iter = list_next (iter))
     {
       struct process_info *proc = list_entry (iter, struct process_info, list_node);
@@ -250,18 +228,14 @@ process_wait (tid_t child_tid)
         }
     }
   
-  /* Return -1 if not a child or already waited. */
   if (pinfo == NULL || pinfo->wait_called)
     return -1;
   
-  /* Mark as waited. */
   pinfo->wait_called = true;
   
-  /* Wait for child to exit. */
   if (!pinfo->is_terminated)
     sema_down (&pinfo->wait_sync);
   
-  /* Get exit status and cleanup. */
   int ret_status = pinfo->status_code;
   list_remove (&pinfo->list_node);
   free (pinfo);
@@ -276,7 +250,6 @@ process_exit (void)
   struct thread *current = thread_current ();
   uint32_t *pd;
 
-  /* Close all open files. */
   int fd_idx;
   for (fd_idx = 2; fd_idx < 128; fd_idx++)
     {
@@ -287,7 +260,6 @@ process_exit (void)
         }
     }
   
-  /* Close executable and allow writes. */
   if (current->exec_file != NULL)
     {
       file_allow_write (current->exec_file);
@@ -295,7 +267,6 @@ process_exit (void)
       current->exec_file = NULL;
     }
   
-  /* Update child status and signal parent. */
   if (current->proc_info != NULL)
     {
       current->proc_info->status_code = current->status_code;
@@ -303,7 +274,6 @@ process_exit (void)
       sema_up (&current->proc_info->wait_sync);
     }
   
-  /* Free child status structures for all children. */
   while (!list_empty (&current->child_list))
     {
       struct list_elem *node = list_pop_front (&current->child_list);
@@ -337,7 +307,6 @@ process_activate (void)
 {
   struct thread *t = thread_current ();
 
-  /* Activate thread's page tables. */
   pagedir_activate (t->pagedir);
 
   /* Set thread's kernel stack for use in processing

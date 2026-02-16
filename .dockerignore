@@ -1,0 +1,24 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+**/build/
+**/*.o
+**/*.d
+**/*.dsk
+**/*.bin
+bochsout.txt
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

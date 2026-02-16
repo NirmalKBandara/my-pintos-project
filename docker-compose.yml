@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  pintos:
+    build: .
+    container_name: pintos-dev
+    volumes:
+      # Mount source code for live development
+      - ./pintos/src:/pintos/pintos/src
+    stdin_open: true
+    tty: true
+    working_dir: /pintos/pintos/src/threads
